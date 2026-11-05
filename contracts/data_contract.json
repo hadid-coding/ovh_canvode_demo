@@ -1,0 +1,286 @@
+{
+  "canvode_contract_version": "1.0",
+  "pipeline_name": "customer360_kafka_to_postgresql",
+  "generated_from_ir_version": "1.1",
+  "owner": "data-team",
+  "source": {
+    "connector": "kafka",
+    "table": "customer_events",
+    "columns": [
+      {
+        "name": "customer_id",
+        "type": "BIGINT",
+        "nullable": true,
+        "pii": false
+      },
+      {
+        "name": "event_timestamp",
+        "type": "TIMESTAMP",
+        "nullable": true,
+        "pii": false
+      },
+      {
+        "name": "email",
+        "type": "VARCHAR(255)",
+        "nullable": true,
+        "pii": true
+      },
+      {
+        "name": "phone",
+        "type": "VARCHAR(50)",
+        "nullable": true,
+        "pii": true
+      },
+      {
+        "name": "product_id",
+        "type": "BIGINT",
+        "nullable": true,
+        "pii": false
+      },
+      {
+        "name": "amount",
+        "type": "DECIMAL(12,2)",
+        "nullable": true,
+        "pii": false
+      },
+      {
+        "name": "currency",
+        "type": "VARCHAR(3)",
+        "nullable": true,
+        "pii": false
+      },
+      {
+        "name": "event_type",
+        "type": "VARCHAR(50)",
+        "nullable": true,
+        "pii": false
+      }
+    ]
+  },
+  "sink": {
+    "connector": "postgresql",
+    "table": "fact_customer_monthly",
+    "write_mode": "upsert",
+    "primary_key": [
+      "customer_id",
+      "revenue_month",
+      "currency"
+    ],
+    "columns": [
+      {
+        "name": "customer_id",
+        "type": "BIGINT",
+        "nullable": false,
+        "pii": false
+      },
+      {
+        "name": "revenue_month",
+        "type": "DATE",
+        "nullable": false,
+        "pii": false
+      },
+      {
+        "name": "currency",
+        "type": "VARCHAR(3)",
+        "nullable": false,
+        "pii": false
+      },
+      {
+        "name": "customer_segment",
+        "type": "VARCHAR(50)",
+        "nullable": true,
+        "pii": false
+      },
+      {
+        "name": "country_code",
+        "type": "VARCHAR(2)",
+        "nullable": true,
+        "pii": false
+      },
+      {
+        "name": "monthly_revenue",
+        "type": "DECIMAL(14,2)",
+        "nullable": false,
+        "pii": false
+      },
+      {
+        "name": "purchase_count",
+        "type": "INTEGER",
+        "nullable": false,
+        "pii": false
+      },
+      {
+        "name": "last_event_timestamp",
+        "type": "TIMESTAMP",
+        "nullable": false,
+        "pii": false
+      }
+    ]
+  },
+  "masking_policy": [
+    {
+      "column": "email",
+      "strategy": "sha256",
+      "enforced_at": "dbt staging (hash before any analytics surface)"
+    },
+    {
+      "column": "phone",
+      "strategy": "sha256",
+      "enforced_at": "dbt staging (hash before any analytics surface)"
+    }
+  ],
+  "quality_rules": [
+    {
+      "column": "customer_id",
+      "rule": "not_null",
+      "severity": "error",
+      "params": {},
+      "enforced_in": [
+        "dbt",
+        "spark",
+        "airflow"
+      ],
+      "coverage": "full"
+    },
+    {
+      "column": "revenue_month",
+      "rule": "not_null",
+      "severity": "error",
+      "params": {},
+      "enforced_in": [
+        "dbt",
+        "spark",
+        "airflow"
+      ],
+      "coverage": "full"
+    },
+    {
+      "column": "currency",
+      "rule": "not_null",
+      "severity": "error",
+      "params": {},
+      "enforced_in": [
+        "dbt",
+        "spark",
+        "airflow"
+      ],
+      "coverage": "full"
+    },
+    {
+      "column": "customer_id",
+      "rule": "unique",
+      "severity": "error",
+      "params": {
+        "columns": [
+          "customer_id",
+          "revenue_month",
+          "currency"
+        ]
+      },
+      "enforced_in": [
+        "dbt",
+        "spark",
+        "airflow"
+      ],
+      "coverage": "full"
+    },
+    {
+      "column": "currency",
+      "rule": "regex",
+      "severity": "error",
+      "params": {
+        "pattern": "^[A-Z]{3}$"
+      },
+      "enforced_in": [
+        "dbt",
+        "spark",
+        "airflow"
+      ],
+      "coverage": "full"
+    },
+    {
+      "column": "monthly_revenue",
+      "rule": "not_null",
+      "severity": "error",
+      "params": {},
+      "enforced_in": [
+        "dbt",
+        "spark",
+        "airflow"
+      ],
+      "coverage": "full"
+    },
+    {
+      "column": "monthly_revenue",
+      "rule": "min",
+      "severity": "error",
+      "params": {
+        "value": 0
+      },
+      "enforced_in": [
+        "dbt",
+        "spark",
+        "airflow"
+      ],
+      "coverage": "full"
+    },
+    {
+      "column": "purchase_count",
+      "rule": "min",
+      "severity": "error",
+      "params": {
+        "value": 1
+      },
+      "enforced_in": [
+        "dbt",
+        "spark",
+        "airflow"
+      ],
+      "coverage": "full"
+    },
+    {
+      "column": "customer_id",
+      "rule": "row_count",
+      "severity": "error",
+      "params": {
+        "min": 1
+      },
+      "enforced_in": [
+        "dbt",
+        "spark",
+        "airflow"
+      ],
+      "coverage": "full"
+    },
+    {
+      "column": "last_event_timestamp",
+      "rule": "freshness",
+      "severity": "warn",
+      "params": {
+        "max_age_hours": 36
+      },
+      "enforced_in": [
+        "airflow"
+      ],
+      "coverage": "partial"
+    },
+    {
+      "column": "country_code",
+      "rule": "not_null",
+      "severity": "warn",
+      "params": {},
+      "enforced_in": [
+        "dbt",
+        "spark",
+        "airflow"
+      ],
+      "coverage": "full"
+    }
+  ],
+  "coverage_summary": {
+    "total_rules": 11,
+    "fully_enforced": 10,
+    "partially_enforced": 1,
+    "unenforced": 0
+  }
+}

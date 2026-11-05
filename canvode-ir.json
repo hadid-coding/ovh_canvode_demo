@@ -1,0 +1,375 @@
+{
+  "version": "1.1",
+  "pipeline_name": "customer360_kafka_to_postgresql",
+  "description": "Consomme les \u00e9v\u00e9nements client depuis Kafka, nettoie, d\u00e9duplique, pseudonymise les donn\u00e9es personnelles (RGPD), enrichit avec le r\u00e9f\u00e9rentiel client et charge le revenu mensuel par client dans gold.fact_customer_monthly.",
+  "source": {
+    "id": "source",
+    "connector": "kafka",
+    "connection_id": "kafka_customer_events",
+    "database": null,
+    "schema_name": null,
+    "table": "customer_events",
+    "read_mode": "batch",
+    "watermark_column": "event_timestamp",
+    "filters": [
+      {
+        "column": "event_timestamp",
+        "operator": "<",
+        "value": "{{ data_interval_end }}"
+      }
+    ],
+    "columns": [
+      {
+        "name": "customer_id",
+        "type": "BIGINT",
+        "nullable": true,
+        "description": "",
+        "pii": false
+      },
+      {
+        "name": "event_timestamp",
+        "type": "TIMESTAMP",
+        "nullable": true,
+        "description": "",
+        "pii": false
+      },
+      {
+        "name": "email",
+        "type": "VARCHAR(255)",
+        "nullable": true,
+        "description": "",
+        "pii": true
+      },
+      {
+        "name": "phone",
+        "type": "VARCHAR(50)",
+        "nullable": true,
+        "description": "",
+        "pii": true
+      },
+      {
+        "name": "product_id",
+        "type": "BIGINT",
+        "nullable": true,
+        "description": "",
+        "pii": false
+      },
+      {
+        "name": "amount",
+        "type": "DECIMAL(12,2)",
+        "nullable": true,
+        "description": "",
+        "pii": false
+      },
+      {
+        "name": "currency",
+        "type": "VARCHAR(3)",
+        "nullable": true,
+        "description": "",
+        "pii": false
+      },
+      {
+        "name": "event_type",
+        "type": "VARCHAR(50)",
+        "nullable": true,
+        "description": "",
+        "pii": false
+      }
+    ],
+    "options": {
+      "topic": "customer_events",
+      "consumer_group": "airflow_customer360_daily",
+      "auto_offset_reset": "earliest",
+      "enable_auto_commit": false,
+      "window_mode": "month_to_date",
+      "window_start": "{{ data_interval_start.replace(day=1, hour=0, minute=0, second=0) }}",
+      "window_end": "{{ data_interval_end }}",
+      "xcom_payload": "reference_only"
+    }
+  },
+  "transforms": [
+    {
+      "id": "filter_invalid_events",
+      "type": "filter",
+      "description": "\u00c9carte les \u00e9v\u00e9nements invalides : cl\u00e9 client, horodatage, montant ou devise manquants, et montants n\u00e9gatifs.",
+      "sql": "customer_id.notnull() and event_timestamp.notnull() and amount.notnull() and amount >= 0 and currency.notnull()",
+      "inputs": [
+        "source"
+      ],
+      "config": {
+        "layer": "airflow"
+      }
+    },
+    {
+      "id": "dedup_events",
+      "type": "deduplicate",
+      "description": "Supprime les doublons sur (customer_id, event_timestamp) en conservant l'\u00e9v\u00e9nement le plus r\u00e9cent.",
+      "sql": null,
+      "inputs": [
+        "filter_invalid_events"
+      ],
+      "config": {
+        "layer": "airflow",
+        "subset": [
+          "customer_id",
+          "event_timestamp"
+        ],
+        "keep_latest_by": "event_timestamp"
+      }
+    },
+    {
+      "id": "normalize_email",
+      "type": "custom_sql",
+      "description": "Normalise l'email en minuscules sans espaces, avant le hachage, pour que le pseudonyme soit d\u00e9terministe.",
+      "sql": "SELECT customer_id, event_timestamp, LOWER(TRIM(email)) AS email, phone, product_id, amount, currency, event_type FROM df",
+      "inputs": [
+        "dedup_events"
+      ],
+      "config": {
+        "layer": "airflow"
+      }
+    },
+    {
+      "id": "mask_pii",
+      "type": "mask",
+      "description": "Pseudonymise email et t\u00e9l\u00e9phone par SHA-256 sal\u00e9 (RGPD) avant toute jointure ou chargement.",
+      "sql": null,
+      "inputs": [
+        "normalize_email"
+      ],
+      "config": {
+        "layer": "airflow",
+        "columns": [
+          "email",
+          "phone"
+        ],
+        "method": "sha256",
+        "salt_variable": "pii_hash_salt"
+      }
+    },
+    {
+      "id": "enrich_customer_reference",
+      "type": "join",
+      "description": "Enrichit les \u00e9v\u00e9nements avec le r\u00e9f\u00e9rentiel client (segment, pays) par jointure gauche sur customer_id.",
+      "sql": "SELECT e.customer_id, e.event_timestamp, e.email, e.phone, e.product_id, e.amount, e.currency, e.event_type, c.customer_segment, c.country_code FROM df e LEFT JOIN customer_ref c ON e.customer_id = c.customer_id",
+      "inputs": [
+        "mask_pii"
+      ],
+      "config": {
+        "layer": "airflow",
+        "join_type": "left",
+        "on": [
+          "customer_id"
+        ],
+        "right_connection_id": "dw_postgres",
+        "right_table": "silver.dim_customer",
+        "right_columns": [
+          "customer_id",
+          "customer_segment",
+          "country_code"
+        ]
+      }
+    },
+    {
+      "id": "aggregate_monthly_revenue",
+      "type": "custom_sql",
+      "description": "Calcule le revenu mensuel par client et par devise \u00e0 partir des \u00e9v\u00e9nements de type purchase.",
+      "sql": "SELECT customer_id, date(event_timestamp, 'start of month') AS revenue_month, currency, MAX(customer_segment) AS customer_segment, MAX(country_code) AS country_code, ROUND(SUM(amount), 2) AS monthly_revenue, COUNT(*) AS purchase_count, MAX(event_timestamp) AS last_event_timestamp FROM df WHERE event_type = 'purchase' GROUP BY customer_id, date(event_timestamp, 'start of month'), currency",
+      "inputs": [
+        "enrich_customer_reference"
+      ],
+      "config": {
+        "layer": "airflow"
+      }
+    }
+  ],
+  "sink": {
+    "id": "sink",
+    "connector": "postgresql",
+    "connection_id": "dw_postgres",
+    "database": null,
+    "schema_name": "gold",
+    "table": "fact_customer_monthly",
+    "write_mode": "upsert",
+    "partition_by": [
+      "revenue_month"
+    ],
+    "primary_key": [
+      "customer_id",
+      "revenue_month",
+      "currency"
+    ],
+    "columns": [
+      {
+        "name": "customer_id",
+        "type": "BIGINT",
+        "nullable": false,
+        "description": "",
+        "pii": false
+      },
+      {
+        "name": "revenue_month",
+        "type": "DATE",
+        "nullable": false,
+        "description": "",
+        "pii": false
+      },
+      {
+        "name": "currency",
+        "type": "VARCHAR(3)",
+        "nullable": false,
+        "description": "",
+        "pii": false
+      },
+      {
+        "name": "customer_segment",
+        "type": "VARCHAR(50)",
+        "nullable": true,
+        "description": "",
+        "pii": false
+      },
+      {
+        "name": "country_code",
+        "type": "VARCHAR(2)",
+        "nullable": true,
+        "description": "",
+        "pii": false
+      },
+      {
+        "name": "monthly_revenue",
+        "type": "DECIMAL(14,2)",
+        "nullable": false,
+        "description": "",
+        "pii": false
+      },
+      {
+        "name": "purchase_count",
+        "type": "INTEGER",
+        "nullable": false,
+        "description": "",
+        "pii": false
+      },
+      {
+        "name": "last_event_timestamp",
+        "type": "TIMESTAMP",
+        "nullable": false,
+        "description": "",
+        "pii": false
+      }
+    ],
+    "options": {
+      "conflict_action": "DO UPDATE",
+      "partitioning": "RANGE (revenue_month), monthly partitions"
+    }
+  },
+  "schedule": {
+    "cron": "0 2 * * *",
+    "timezone": "UTC",
+    "description": "Quotidien \u00e0 02:00 UTC ; recalcul du mois en cours (month-to-date) \u00e0 chaque ex\u00e9cution, donc idempotent."
+  },
+  "quality_rules": [
+    {
+      "column": "customer_id",
+      "rule": "not_null",
+      "params": {},
+      "severity": "error",
+      "description": "Cl\u00e9 client obligatoire pour la cl\u00e9 primaire de la table de faits."
+    },
+    {
+      "column": "revenue_month",
+      "rule": "not_null",
+      "params": {},
+      "severity": "error",
+      "description": "La partition mensuelle ne peut pas \u00eatre nulle."
+    },
+    {
+      "column": "currency",
+      "rule": "not_null",
+      "params": {},
+      "severity": "error",
+      "description": "La devise fait partie de la cl\u00e9 primaire ; on n'agr\u00e8ge jamais des devises diff\u00e9rentes."
+    },
+    {
+      "column": "customer_id",
+      "rule": "unique",
+      "params": {
+        "columns": [
+          "customer_id",
+          "revenue_month",
+          "currency"
+        ]
+      },
+      "severity": "error",
+      "description": "Garantit une seule ligne par client, mois et devise (grain de la table, base de l'upsert)."
+    },
+    {
+      "column": "currency",
+      "rule": "regex",
+      "params": {
+        "pattern": "^[A-Z]{3}$"
+      },
+      "severity": "error",
+      "description": "La devise doit \u00eatre un code ISO 4217 sur 3 lettres majuscules."
+    },
+    {
+      "column": "monthly_revenue",
+      "rule": "not_null",
+      "params": {},
+      "severity": "error",
+      "description": "Le revenu mensuel est la m\u00e9trique principale de la table."
+    },
+    {
+      "column": "monthly_revenue",
+      "rule": "min",
+      "params": {
+        "value": 0
+      },
+      "severity": "error",
+      "description": "Les montants n\u00e9gatifs sont filtr\u00e9s en amont ; un revenu n\u00e9gatif signale une anomalie."
+    },
+    {
+      "column": "purchase_count",
+      "rule": "min",
+      "params": {
+        "value": 1
+      },
+      "severity": "error",
+      "description": "Chaque ligne agr\u00e9g\u00e9e doit reposer sur au moins un achat."
+    },
+    {
+      "column": "customer_id",
+      "rule": "row_count",
+      "params": {
+        "min": 1
+      },
+      "severity": "error",
+      "description": "D\u00e9tecte un chargement vide (topic vide, offsets incorrects ou filtre trop strict)."
+    },
+    {
+      "column": "last_event_timestamp",
+      "rule": "freshness",
+      "params": {
+        "max_age_hours": 36
+      },
+      "severity": "warn",
+      "description": "Alerte si les donn\u00e9es les plus r\u00e9centes ont plus de 36 h (consommation Kafka bloqu\u00e9e ou producteur arr\u00eat\u00e9)."
+    },
+    {
+      "column": "country_code",
+      "rule": "not_null",
+      "params": {},
+      "severity": "warn",
+      "description": "Suit le taux de clients sans correspondance dans le r\u00e9f\u00e9rentiel (jointure gauche)."
+    }
+  ],
+  "tags": [
+    "customer360",
+    "gold",
+    "kafka",
+    "gdpr",
+    "data-team"
+  ],
+  "owner": "data-team",
+  "sla_minutes": 15,
+  "documentation": "# customer360_kafka_to_postgresql\n\n## Objectif\nConsomme le topic Kafka `customer_events`, filtre les \u00e9v\u00e9nements invalides, d\u00e9duplique sur (customer_id, event_timestamp), normalise l'email en minuscules, pseudonymise email et t\u00e9l\u00e9phone (SHA-256 sal\u00e9), enrichit avec `silver.dim_customer` et charge le revenu mensuel par client dans `gold.fact_customer_monthly`.\n\n## Flux\nextract (Kafka, month-to-date) -> transform (filter, dedup, lowercase, mask, join, aggregate) -> quality_check -> load (upsert).\n\n## Idempotence\nChaque ex\u00e9cution recalcule le mois en cours jusqu'\u00e0 data_interval_end, puis fait un upsert sur (customer_id, revenue_month, currency). Un rejeu produit le m\u00eame r\u00e9sultat et les \u00e9v\u00e9nements tardifs sont absorb\u00e9s.\n\n## Planification et SLA\n`0 2 * * *` UTC, catchup=False, retries=3 avec backoff exponentiel, on_failure_callback vers l'alerting. SLA de 15 minutes.\n\n## Hypoth\u00e8ses \u00e0 valider\n- Le r\u00e9f\u00e9rentiel est `silver.dim_customer` (customer_id, customer_segment, country_code).\n- Le revenu ne compte que `event_type = 'purchase'`.\n- La r\u00e9tention Kafka est d'au moins 31 jours.\n- Le sel de hachage est dans la Variable Airflow `pii_hash_salt` (secrets backend)."
+}
