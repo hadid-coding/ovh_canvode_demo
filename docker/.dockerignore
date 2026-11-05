@@ -1,0 +1,15 @@
+# Canvode generated .dockerignore
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+.git
+.gitignore
+docs/
+tests/
+*.md
+.env*
+!.env.example
+terraform/
+airflow/

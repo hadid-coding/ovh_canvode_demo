@@ -1,0 +1,8 @@
+version: 2
+
+models:
+  - name: int_customer360_kafka_to_postgresql
+    description: >
+      Intermediate model for customer360_kafka_to_postgresql.
+      Applies business logic: filter, deduplicate, custom_sql, mask, join, custom_sql.
+      Materialized as table for downstream mart performance.

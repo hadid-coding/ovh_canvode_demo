@@ -1,0 +1,21 @@
+version: 2
+
+models:
+  - name: stg_customer360_kafka_to_postgresql
+    description: >
+      Staging view for customer360_kafka_to_postgresql. 1:1 with source, types enforced, PII masked.
+      No business logic — this is the stable interface to the raw source.
+    config:
+      tags: ['staging']
+    columns:
+      - name: customer_id
+        tests:
+          - not_null
+          - unique
+      - name: event_timestamp
+      - name: email_masked
+      - name: phone_masked
+      - name: product_id
+      - name: amount
+      - name: currency
+      - name: event_type

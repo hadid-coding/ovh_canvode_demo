@@ -1,0 +1,35 @@
+version: 2
+
+models:
+  - name: mart_customer360_kafka_to_postgresql
+    description: "Consomme les événements client depuis Kafka, nettoie, déduplique, pseudonymise les données personnelles (RGPD), enrichit avec le référentiel client et charge le revenu mensuel par client dans gold.fact_customer_monthly."
+    config:
+      tags: ['mart', 'production']
+
+    tests:
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          min_value: 1
+    columns:
+      - name: customer_id
+        tests:
+          - not_null
+          - unique
+      - name: revenue_month
+        tests:
+          - not_null
+      - name: currency
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: "currency rlike '^[A-Z]{3}$'"
+      - name: customer_segment
+      - name: country_code
+        tests:
+          - not_null:
+              config:
+                severity: warn
+      - name: monthly_revenue
+        tests:
+          - not_null
+      - name: purchase_count
+      - name: last_event_timestamp

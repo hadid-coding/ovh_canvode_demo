@@ -1,0 +1,21 @@
+dw_postgres:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('KAFKA_CUSTOMER_EVENTS_HOST', 'localhost') }}"
+      user: "{{ env_var('KAFKA_CUSTOMER_EVENTS_USER') }}"
+      password: "{{ env_var('KAFKA_CUSTOMER_EVENTS_PASSWORD') }}"
+      port: 5432
+      database: mydb
+      schema: gold
+      threads: 4
+    prod:
+      type: postgres
+      host: "{{ env_var('KAFKA_CUSTOMER_EVENTS_HOST') }}"
+      user: "{{ env_var('KAFKA_CUSTOMER_EVENTS_USER') }}"
+      password: "{{ env_var('KAFKA_CUSTOMER_EVENTS_PASSWORD') }}"
+      port: 5432
+      database: mydb
+      schema: gold
+      threads: 8
